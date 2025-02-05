@@ -1,0 +1,12 @@
+# name: test/sql/hdf5_read.test
+# description: test hdf5 extension
+# group: [read]
+
+# Require statement will ensure the extension is loaded from now on
+require hdf5
+
+# Confirm the extension works
+query I
+SELECT * from hdf5_read('Sam');
+----
+Rusty Quack Sam
