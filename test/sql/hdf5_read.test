@@ -6,7 +6,8 @@
 require hdf5
 
 # Confirm the extension works
-query I
-SELECT * from hdf5_read('Sam');
+query II
+SELECT * from hdf5_read("a", "b");
 ----
-Rusty Quack Sam
+a
+b
