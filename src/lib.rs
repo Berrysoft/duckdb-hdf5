@@ -1,12 +1,12 @@
 use duckdb::{
-    core::{DataChunkHandle, LogicalTypeHandle, LogicalTypeId},
+    core::{DataChunkHandle, Inserter, LogicalTypeHandle, LogicalTypeId},
     ffi,
     vtab::{BindInfo, Free, FunctionInfo, InitInfo, VTab},
     Connection, Result,
 };
 use duckdb_loadable_macros::duckdb_entrypoint_c_api;
 use hdf5::types::{FloatSize, IntSize, TypeDescriptor, VarLenArray, VarLenAscii, VarLenUnicode};
-use std::{borrow::Cow, error::Error};
+use std::{borrow::Cow, error::Error, ops::Deref};
 
 pub trait ReadRawBytes {
     fn read_raw_bytes(&self, dtype: &TypeDescriptor) -> hdf5::Result<Vec<u8>>;
@@ -74,7 +74,19 @@ fn iter_dtype(dtype: &TypeDescriptor) -> Vec<(Cow<'static, str>, LogicalTypeHand
         TypeDescriptor::Compound(c) => {
             let mut res = vec![];
             for f in &c.fields {
-                let ty = iter_dtype(&f.ty).into_iter().next().unwrap().1;
+                let (names, types) = iter_dtype(&f.ty)
+                    .into_iter()
+                    .unzip::<Cow<'static, str>, LogicalTypeHandle, Vec<_>, Vec<_>>();
+                let ty = if types.len() > 1 {
+                    let types = types
+                        .into_iter()
+                        .zip(&names)
+                        .map(|(ty, name)| (name.deref(), ty))
+                        .collect::<Vec<_>>();
+                    LogicalTypeHandle::struct_type(types.as_slice())
+                } else {
+                    types.into_iter().next().unwrap()
+                };
                 res.push((Cow::Owned(f.name.clone()), ty))
             }
             res
@@ -95,7 +107,7 @@ fn iter_dtype(dtype: &TypeDescriptor) -> Vec<(Cow<'static, str>, LogicalTypeHand
         | TypeDescriptor::VarLenUnicode => {
             vec![(RESULT_COLNAME, LogicalTypeId::Varchar.into())]
         }
-        TypeDescriptor::Reference(_) => todo!(),
+        TypeDescriptor::Reference(_) => vec![(RESULT_COLNAME, LogicalTypeId::Blob.into())],
     }
 }
 
@@ -148,7 +160,10 @@ fn fill(dtype: &TypeDescriptor, slice: &[u8], output: &mut DataChunkHandle, idx:
             let vec = output.list_vector(idx);
             vec.set_child(array.as_bytes());
         }
-        TypeDescriptor::Reference(_) => todo!(),
+        TypeDescriptor::Reference(_) => {
+            let vec = output.flat_vector(idx);
+            vec.insert(0, &slice[..dtype.size()]);
+        }
     }
 }
 
