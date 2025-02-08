@@ -7,8 +7,16 @@ require hdf5
 
 # Confirm the extension works
 query I
-SELECT result from hdf5_read("test.h5", "test");
+SELECT result FROM hdf5_read("test.h5", "test");
 ----
 1
 2
 3
+
+# Confirm multicolumn works
+query II
+SELECT * FROM hdf5_read("test.h5", "record");
+----
+114.514	FALSE
+19.19	FALSE
+2147483647	TRUE

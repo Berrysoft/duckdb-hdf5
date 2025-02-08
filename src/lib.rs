@@ -5,7 +5,7 @@ use duckdb::{
     Connection, Result,
 };
 use duckdb_loadable_macros::duckdb_entrypoint_c_api;
-use hdf5::types::{FloatSize, IntSize, TypeDescriptor};
+use hdf5::types::{FloatSize, IntSize, TypeDescriptor, VarLenArray, VarLenAscii, VarLenUnicode};
 use std::{borrow::Cow, error::Error};
 
 pub trait ReadRawBytes {
@@ -106,34 +106,47 @@ macro_rules! fill_vec {
     }};
 }
 
-fn fill(dtype: &TypeDescriptor, slice: &[u8], output: &mut DataChunkHandle) {
+fn fill(dtype: &TypeDescriptor, slice: &[u8], output: &mut DataChunkHandle, idx: usize) {
     match dtype {
-        TypeDescriptor::Integer(IntSize::U1) => fill_vec!(output, 0, slice, i8),
-        TypeDescriptor::Integer(IntSize::U2) => fill_vec!(output, 0, slice, i16),
-        TypeDescriptor::Integer(IntSize::U4) => fill_vec!(output, 0, slice, i32),
-        TypeDescriptor::Integer(IntSize::U8) => fill_vec!(output, 0, slice, i64),
-        TypeDescriptor::Unsigned(IntSize::U1) => fill_vec!(output, 0, slice, u8),
-        TypeDescriptor::Unsigned(IntSize::U2) => fill_vec!(output, 0, slice, u16),
-        TypeDescriptor::Unsigned(IntSize::U4) => fill_vec!(output, 0, slice, u32),
-        TypeDescriptor::Unsigned(IntSize::U8) => fill_vec!(output, 0, slice, u64),
-        TypeDescriptor::Float(FloatSize::U4) => fill_vec!(output, 0, slice, f32),
-        TypeDescriptor::Float(FloatSize::U8) => fill_vec!(output, 0, slice, f64),
-        TypeDescriptor::Boolean => fill_vec!(output, 0, slice, bool),
-        TypeDescriptor::Enum(e) => fill(&e.base_type(), slice, output),
+        TypeDescriptor::Integer(IntSize::U1) => fill_vec!(output, idx, slice, i8),
+        TypeDescriptor::Integer(IntSize::U2) => fill_vec!(output, idx, slice, i16),
+        TypeDescriptor::Integer(IntSize::U4) => fill_vec!(output, idx, slice, i32),
+        TypeDescriptor::Integer(IntSize::U8) => fill_vec!(output, idx, slice, i64),
+        TypeDescriptor::Unsigned(IntSize::U1) => fill_vec!(output, idx, slice, u8),
+        TypeDescriptor::Unsigned(IntSize::U2) => fill_vec!(output, idx, slice, u16),
+        TypeDescriptor::Unsigned(IntSize::U4) => fill_vec!(output, idx, slice, u32),
+        TypeDescriptor::Unsigned(IntSize::U8) => fill_vec!(output, idx, slice, u64),
+        TypeDescriptor::Float(FloatSize::U4) => fill_vec!(output, idx, slice, f32),
+        TypeDescriptor::Float(FloatSize::U8) => fill_vec!(output, idx, slice, f64),
+        TypeDescriptor::Boolean => fill_vec!(output, idx, slice, bool),
+        TypeDescriptor::Enum(e) => fill(&e.base_type(), slice, output, idx),
         TypeDescriptor::Compound(c) => {
-            todo!()
+            for (i, f) in c.fields.iter().enumerate() {
+                fill(&f.ty, &slice[f.offset..], output, idx + i);
+            }
         }
         TypeDescriptor::FixedArray(ty, len) => {
-            todo!()
+            let vec = output.array_vector(idx);
+            vec.set_child(&slice[..*len * ty.size()]);
         }
         TypeDescriptor::VarLenArray(ty) => {
-            todo!()
+            let array = unsafe { slice.as_ptr().cast::<VarLenArray<u8>>().as_ref() }.unwrap();
+            let vec = output.list_vector(idx);
+            vec.set_child(&slice[..array.len() * ty.size()]);
         }
         TypeDescriptor::FixedAscii(len) | TypeDescriptor::FixedUnicode(len) => {
-            todo!()
+            let vec = output.array_vector(idx);
+            vec.set_child(&slice[..*len]);
         }
-        TypeDescriptor::VarLenAscii | TypeDescriptor::VarLenUnicode => {
-            todo!()
+        TypeDescriptor::VarLenAscii => {
+            let array = unsafe { slice.as_ptr().cast::<VarLenAscii>().as_ref() }.unwrap();
+            let vec = output.list_vector(idx);
+            vec.set_child(array.as_bytes());
+        }
+        TypeDescriptor::VarLenUnicode => {
+            let array = unsafe { slice.as_ptr().cast::<VarLenUnicode>().as_ref() }.unwrap();
+            let vec = output.list_vector(idx);
+            vec.set_child(array.as_bytes());
         }
         TypeDescriptor::Reference(_) => todo!(),
     }
@@ -164,7 +177,7 @@ impl BindDataInner {
         }
         let data = &self.data[self.index * item_size..][..item_size];
         self.index += 1;
-        fill(&self.dtype, data, output);
+        fill(&self.dtype, data, output, 0);
         output.set_len(1);
         true
     }
