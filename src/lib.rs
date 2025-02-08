@@ -248,6 +248,6 @@ impl VTab for Hdf5Read {
 
 #[duckdb_entrypoint_c_api(ext_name = "hdf5", min_duckdb_version = "v0.0.1")]
 pub fn extension_entrypoint(con: Connection) -> Result<(), Box<dyn Error>> {
-    con.register_table_function::<Hdf5Read>("hdf5_read")?;
+    con.register_table_function::<Hdf5Read>("read_hdf5")?;
     Ok(())
 }
