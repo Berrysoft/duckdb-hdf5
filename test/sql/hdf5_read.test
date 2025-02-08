@@ -6,8 +6,9 @@
 require hdf5
 
 # Confirm the extension works
-query II
-SELECT * from hdf5_read("a", "b");
+query I
+SELECT result from hdf5_read("test.h5", "test");
 ----
-a
-b
+1
+2
+3

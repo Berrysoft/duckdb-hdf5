@@ -674,6 +674,7 @@ dependencies = [
  "duckdb",
  "duckdb-loadable-macros",
  "hdf5-metno",
+ "hdf5-metno-sys",
 ]
 
 [[package]]
