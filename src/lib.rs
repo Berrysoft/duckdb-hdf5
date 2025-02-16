@@ -1,12 +1,17 @@
 use duckdb::{
     core::{DataChunkHandle, Inserter, LogicalTypeHandle, LogicalTypeId},
     ffi,
-    vtab::{BindInfo, Free, FunctionInfo, InitInfo, VTab},
+    vtab::{BindInfo, InitInfo, TableFunctionInfo, VTab},
     Connection, Result,
 };
 use duckdb_loadable_macros::duckdb_entrypoint_c_api;
 use hdf5::types::{FloatSize, IntSize, TypeDescriptor, VarLenArray, VarLenAscii, VarLenUnicode};
-use std::{borrow::Cow, error::Error, ops::Deref};
+use std::{
+    borrow::Cow,
+    error::Error,
+    ops::Deref,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 pub trait ReadRawBytes {
     fn read_raw_bytes(&self, dtype: &TypeDescriptor) -> hdf5::Result<Vec<u8>>;
@@ -34,10 +39,10 @@ impl ReadRawBytes for hdf5::Dataset {
     }
 }
 
-struct BindDataInner {
+struct Hdf5ReadBindData {
     dtype: TypeDescriptor,
     data: Vec<u8>,
-    index: usize,
+    index: AtomicUsize,
 }
 
 const RESULT_COLNAME: Cow<str> = Cow::Borrowed("result");
@@ -167,7 +172,7 @@ fn fill(dtype: &TypeDescriptor, slice: &[u8], output: &mut DataChunkHandle, idx:
     }
 }
 
-impl BindDataInner {
+impl Hdf5ReadBindData {
     fn new(path: &str, dataset: &str) -> hdf5::Result<Self> {
         let file = hdf5::File::open(path)?;
         let dataset = file.dataset(dataset)?;
@@ -176,7 +181,7 @@ impl BindDataInner {
         Ok(Self {
             dtype,
             data,
-            index: 0,
+            index: AtomicUsize::new(0),
         })
     }
 
@@ -184,33 +189,20 @@ impl BindDataInner {
         iter_dtype(&self.dtype)
     }
 
-    fn fill(&mut self, output: &mut DataChunkHandle) -> bool {
+    fn fill(&self, output: &mut DataChunkHandle) {
+        let index = self.index.fetch_add(1, Ordering::Relaxed);
         let item_size = self.dtype.size();
-        if self.index * item_size >= self.data.len() {
+        if index * item_size >= self.data.len() {
             output.set_len(0);
-            return false;
+        } else {
+            let data = &self.data[index * item_size..][..item_size];
+            fill(&self.dtype, data, output, 0);
+            output.set_len(1);
         }
-        let data = &self.data[self.index * item_size..][..item_size];
-        self.index += 1;
-        fill(&self.dtype, data, output, 0);
-        output.set_len(1);
-        true
-    }
-}
-
-struct Hdf5ReadBindData {
-    data: Option<BindDataInner>,
-}
-
-impl Free for Hdf5ReadBindData {
-    fn free(&mut self) {
-        self.data.take();
     }
 }
 
 struct Hdf5ReadInitData;
-
-impl Free for Hdf5ReadInitData {}
 
 struct Hdf5Read;
 
@@ -218,38 +210,26 @@ impl VTab for Hdf5Read {
     type InitData = Hdf5ReadInitData;
     type BindData = Hdf5ReadBindData;
 
-    unsafe fn bind(bind: &BindInfo, data: *mut Self::BindData) -> Result<(), Box<dyn Error>> {
+    fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn Error>> {
         let path = bind.get_parameter(0).to_string();
         let dataset = bind.get_parameter(1).to_string();
-        if let Some(data) = data.as_mut() {
-            let inner = BindDataInner::new(&path, &dataset)?;
-            for (name, dtype) in inner.iter_dtype() {
-                bind.add_result_column(&name, dtype);
-            }
-            data.data = Some(inner);
+        let data = Hdf5ReadBindData::new(&path, &dataset)?;
+        for (name, dtype) in data.iter_dtype() {
+            bind.add_result_column(&name, dtype);
         }
-        Ok(())
+        Ok(data)
     }
 
-    unsafe fn init(_: &InitInfo, _data: *mut Self::InitData) -> Result<(), Box<dyn Error>> {
-        Ok(())
+    fn init(_: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
+        Ok(Hdf5ReadInitData)
     }
 
-    unsafe fn func(
-        func: &FunctionInfo,
+    fn func(
+        func: &TableFunctionInfo<Self>,
         output: &mut DataChunkHandle,
     ) -> Result<(), Box<dyn Error>> {
-        let bind_info = func.get_bind_data::<Self::BindData>().as_mut();
-
-        if let Some(bind_info) = bind_info {
-            if let Some(mut data) = bind_info.data.take() {
-                if data.fill(output) {
-                    bind_info.data = Some(data);
-                }
-            } else {
-                output.set_len(0);
-            }
-        }
+        let data = func.get_bind_data();
+        data.fill(output);
         Ok(())
     }
 
@@ -261,7 +241,7 @@ impl VTab for Hdf5Read {
     }
 }
 
-#[duckdb_entrypoint_c_api(ext_name = "hdf5", min_duckdb_version = "v0.0.1")]
+#[duckdb_entrypoint_c_api()]
 pub fn extension_entrypoint(con: Connection) -> Result<(), Box<dyn Error>> {
     con.register_table_function::<Hdf5Read>("read_hdf5")?;
     Ok(())
