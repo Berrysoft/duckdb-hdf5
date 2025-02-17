@@ -42,7 +42,6 @@ impl ReadRawBytes for hdf5::Dataset {
 struct Hdf5ReadBindData {
     dtype: TypeDescriptor,
     data: Vec<u8>,
-    index: AtomicUsize,
 }
 
 const RESULT_COLNAME: Cow<str> = Cow::Borrowed("result");
@@ -178,19 +177,14 @@ impl Hdf5ReadBindData {
         let dataset = file.dataset(dataset)?;
         let dtype = dataset.dtype()?.to_descriptor()?;
         let data = dataset.read_raw_bytes(&dtype)?;
-        Ok(Self {
-            dtype,
-            data,
-            index: AtomicUsize::new(0),
-        })
+        Ok(Self { dtype, data })
     }
 
     fn iter_dtype(&self) -> Vec<(Cow<'static, str>, LogicalTypeHandle)> {
         iter_dtype(&self.dtype)
     }
 
-    fn fill(&self, output: &mut DataChunkHandle) {
-        let index = self.index.fetch_add(1, Ordering::Relaxed);
+    fn fill(&self, index: usize, output: &mut DataChunkHandle) {
         let item_size = self.dtype.size();
         if index * item_size >= self.data.len() {
             output.set_len(0);
@@ -202,7 +196,9 @@ impl Hdf5ReadBindData {
     }
 }
 
-struct Hdf5ReadInitData;
+struct Hdf5ReadInitData {
+    index: AtomicUsize,
+}
 
 struct Hdf5Read;
 
@@ -221,15 +217,19 @@ impl VTab for Hdf5Read {
     }
 
     fn init(_: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
-        Ok(Hdf5ReadInitData)
+        Ok(Hdf5ReadInitData {
+            index: AtomicUsize::new(0),
+        })
     }
 
     fn func(
         func: &TableFunctionInfo<Self>,
         output: &mut DataChunkHandle,
     ) -> Result<(), Box<dyn Error>> {
-        let data = func.get_bind_data();
-        data.fill(output);
+        let bind_data = func.get_bind_data();
+        let init_data = func.get_init_data();
+        let index = init_data.index.fetch_add(1, Ordering::Relaxed);
+        bind_data.fill(index, output);
         Ok(())
     }
 
