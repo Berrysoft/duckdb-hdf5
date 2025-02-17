@@ -5,7 +5,9 @@ use duckdb::{
     Connection, Result,
 };
 use duckdb_loadable_macros::duckdb_entrypoint_c_api;
-use hdf5::types::{FloatSize, IntSize, TypeDescriptor, VarLenArray, VarLenAscii, VarLenUnicode};
+use hdf5::types::{
+    CompoundType, FloatSize, IntSize, TypeDescriptor, VarLenArray, VarLenAscii, VarLenUnicode,
+};
 use std::{
     borrow::Cow,
     error::Error,
@@ -184,13 +186,29 @@ impl Hdf5ReadBindData {
         iter_dtype(&self.dtype)
     }
 
-    fn fill(&self, index: usize, output: &mut DataChunkHandle) {
+    fn project_dtype(&self, indices: &[duckdb::ffi::idx_t]) -> TypeDescriptor {
+        match &self.dtype {
+            TypeDescriptor::Compound(c) => {
+                let mut fields = vec![];
+                for i in indices {
+                    fields.push(c.fields[*i as usize].clone());
+                }
+                TypeDescriptor::Compound(CompoundType {
+                    fields,
+                    size: c.size,
+                })
+            }
+            _ => self.dtype.clone(),
+        }
+    }
+
+    fn fill(&self, index: usize, dtype: &TypeDescriptor, output: &mut DataChunkHandle) {
         let item_size = self.dtype.size();
         if index * item_size >= self.data.len() {
             output.set_len(0);
         } else {
             let data = &self.data[index * item_size..][..item_size];
-            fill(&self.dtype, data, output, 0);
+            fill(dtype, data, output, 0);
             output.set_len(1);
         }
     }
@@ -198,6 +216,16 @@ impl Hdf5ReadBindData {
 
 struct Hdf5ReadInitData {
     index: AtomicUsize,
+    dtype: TypeDescriptor,
+}
+
+impl Hdf5ReadInitData {
+    pub fn new(dtype: TypeDescriptor) -> Self {
+        Self {
+            index: AtomicUsize::new(0),
+            dtype,
+        }
+    }
 }
 
 struct Hdf5Read;
@@ -216,10 +244,10 @@ impl VTab for Hdf5Read {
         Ok(data)
     }
 
-    fn init(_: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
-        Ok(Hdf5ReadInitData {
-            index: AtomicUsize::new(0),
-        })
+    fn init(init: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
+        let bind_data = unsafe { init.get_bind_data::<Self::BindData>().as_ref() }.unwrap();
+        let dtype = bind_data.project_dtype(&init.get_column_indices());
+        Ok(Hdf5ReadInitData::new(dtype))
     }
 
     fn func(
@@ -229,7 +257,7 @@ impl VTab for Hdf5Read {
         let bind_data = func.get_bind_data();
         let init_data = func.get_init_data();
         let index = init_data.index.fetch_add(1, Ordering::Relaxed);
-        bind_data.fill(index, output);
+        bind_data.fill(index, &init_data.dtype, output);
         Ok(())
     }
 
@@ -238,6 +266,10 @@ impl VTab for Hdf5Read {
             LogicalTypeId::Varchar.into(),
             LogicalTypeId::Varchar.into(),
         ])
+    }
+
+    fn supports_pushdown() -> bool {
+        true
     }
 }
 
