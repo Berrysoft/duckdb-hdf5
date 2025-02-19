@@ -28,7 +28,8 @@ duckdb = { version = "1.2.0", features = [
 duckdb-loadable-macros = "0.1.4"
 hdf5 = { package = "hdf5-metno", version = "0.9.4" }
 hdf5-sys = { package = "hdf5-metno-sys", version = "0.10.1" }
+libz-sys = "1.1.21"
 
 [features]
 default = ["static"]
-static = ["hdf5/static", "hdf5-sys/static"]
+static = ["hdf5/static", "hdf5/zlib", "libz-sys/static"]
