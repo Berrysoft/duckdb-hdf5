@@ -1,6 +1,6 @@
 [package]
 name = "hdf5_extension"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 
 [lib]
@@ -21,12 +21,12 @@ path = "src/wasm_lib.rs"
 crate-type = ["staticlib"]
 
 [dependencies]
-duckdb = { version = "1.2.0", features = [
+duckdb = { version = "1.2.1", features = [
     "vtab-loadable",
     "loadable-extension",
 ] }
-duckdb-loadable-macros = "0.1.4"
-hdf5 = { package = "hdf5-metno", version = "0.9.4" }
+duckdb-loadable-macros = "0.1.5"
+hdf5 = { package = "hdf5-metno", version = "0.10.1" }
 hdf5-sys = { package = "hdf5-metno-sys", version = "0.10.1" }
 libz-sys = "1.1.21"
 
